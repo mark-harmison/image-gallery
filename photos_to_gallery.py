@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 """
+test commit
 photos_to_gallery.py
 
 Reads JPG images from a folder, extracts two text fields from XMP metadata
