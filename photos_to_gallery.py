@@ -1,6 +1,5 @@
 #!/usr/bin/env python3
 """
-test commit
 photos_to_gallery.py
 
 Reads JPG images from a folder, extracts two text fields from XMP metadata
@@ -31,7 +30,7 @@ Dependencies:
     pip install Pillow reportlab
 
 Arguments:
-    image_folder   Folder containing .jpg/.jpeg files (default: current directory)
+    image_folder   Folder containing .jpg/.jpeg/.png files (default: current directory)
     --output-dir   Where to write the output files (default: same as image_folder)
     --title        Title shown in the gallery (default: "Photo Gallery")
 """
@@ -174,8 +173,8 @@ def read_xmp_fields(paths: list[Path], exiftool_bin: str) -> dict[str, tuple[str
 # ─────────────────────────────────────────────────────────────────────────────
 
 def collect_images(folder: Path, exiftool_bin: str) -> list[tuple[Path, str, str]]:
-    """Return sorted list of (path, caption, comment) for all JPEGs in folder."""
-    extensions = {".jpg", ".jpeg"}
+    """Return sorted list of (path, caption, comment) for all JPEG and PNG files in folder."""
+    extensions = {".jpg", ".jpeg", ".png"}
     paths = sorted(p for p in folder.iterdir() if p.suffix.lower() in extensions)
     if not paths:
         return []
@@ -194,6 +193,9 @@ def collect_images(folder: Path, exiftool_bin: str) -> list[tuple[Path, str, str
 # ─────────────────────────────────────────────────────────────────────────────
 # HTML generator  (images referenced by relative URL, NOT embedded)
 # ─────────────────────────────────────────────────────────────────────────────
+
+# Maximum pixel length of the longest side of a thumbnail image.
+THUMB_MAX_PX = 320
 
 HTML_TEMPLATE = """\
 <!DOCTYPE html>
@@ -231,22 +233,27 @@ HTML_TEMPLATE = """\
   }}
 
   .grid {{
-    display: grid;
-    grid-template-columns: repeat(auto-fill, minmax(200px, 1fr));
+    display: flex;
+    flex-wrap: wrap;
     gap: 12px;
     padding: 2rem;
     max-width: 1400px;
     margin: 0 auto;
+    justify-content: center;
+    align-items: flex-start;
   }}
   .thumb {{
     cursor: pointer;
-    overflow: hidden;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
     border-radius: 4px;
     background: #111;
-    aspect-ratio: 4/3;
     position: relative;
     border: 2px solid transparent;
     transition: border-color 0.2s, transform 0.2s;
+    max-width: {{thumb_max_px}}px;
+    max-height: {{thumb_max_px}}px;
   }}
   .thumb:hover {{
     border-color: #e8d8b8;
@@ -254,10 +261,12 @@ HTML_TEMPLATE = """\
     z-index: 1;
   }}
   .thumb img {{
-    width: 100%;
-    height: 100%;
-    object-fit: cover;
     display: block;
+    max-width: {{thumb_max_px}}px;
+    max-height: {{thumb_max_px}}px;
+    width: auto;
+    height: auto;
+    border-radius: 2px;
   }}
   .thumb .thumb-caption {{
     position: absolute;
@@ -462,11 +471,35 @@ lb.addEventListener('touchend',   e => {{
 </html>
 """
 
+def make_thumbnail(src_path: Path, thumb_dir: Path, max_px: int) -> Path:
+    """
+    Create a scaled-down copy of src_path inside thumb_dir, constrained so
+    that neither side exceeds max_px pixels.  Returns the path of the new file.
+    The thumbnail is always saved as JPEG regardless of the source format.
+    """
+    thumb_dir.mkdir(parents=True, exist_ok=True)
+    thumb_path = thumb_dir / (src_path.stem + ".jpg")
+
+    img = Image.open(src_path).convert("RGB")
+    try:
+        img = ImageOps.exif_transpose(img)
+    except Exception:
+        pass
+
+    w, h = img.size
+    scale = min(max_px / w, max_px / h, 1.0)   # never upscale
+    if scale < 1.0:
+        img = img.resize((int(w * scale), int(h * scale)), Image.LANCZOS)
+
+    img.save(thumb_path, format="JPEG", quality=82, optimize=True)
+    return thumb_path
+
+
 THUMB_TEMPLATE = (
     '  <div class="thumb" onclick="show({idx})" tabindex="0" '
     'onkeydown="if(event.key===\'Enter\')show({idx})" '
     'role="button" aria-label="{tooltip_attr}" title="{tooltip_attr}">\n'
-    '    <img src="{rel_src}" alt="{tooltip_attr}" loading="lazy">\n'
+    '    <img src="{thumb_src}" alt="{tooltip_attr}" loading="lazy">\n'
     '    <span class="thumb-caption">{overlay_html}</span>\n'
     '  </div>'
 )
@@ -478,22 +511,29 @@ def build_html(items: list[tuple[Path, str, str]], title: str, output_path: Path
     photos_json_list = []
     thumb_parts = []
 
-    print(f"  Building HTML — {len(items)} image(s) referenced by relative URL…")
+    # Thumbnails go into a "thumbs" subfolder next to the HTML file.
+    thumb_dir = output_path.parent / "thumbs"
+
+    print(f"  Building HTML — {len(items)} image(s), generating thumbnails in '{thumb_dir.name}/'…")
     for idx, (path, caption, comment) in enumerate(items):
         print(f"    [{idx+1}/{len(items)}] {path.name}")
 
-        # Relative path from the HTML file's location to the image file.
-        # output_path.parent should equal path.parent (same folder), giving
-        # just the filename — but we compute it properly in case they differ.
+        # Full-size relative URL (for the lightbox).
         try:
             rel_src = path.relative_to(output_path.parent).as_posix()
         except ValueError:
-            # Fallback: just the filename
             rel_src = path.name
 
+        # Scaled-down thumbnail (for the grid).
+        thumb_path = make_thumbnail(path, thumb_dir, THUMB_MAX_PX)
+        try:
+            thumb_rel = thumb_path.relative_to(output_path.parent).as_posix()
+        except ValueError:
+            thumb_rel = f"thumbs/{thumb_path.name}"
+
         tooltip = caption or comment
-        tooltip_attr  = html_mod.escape(tooltip, quote=True)
-        overlay_html  = html_mod.escape(caption or comment)
+        tooltip_attr = html_mod.escape(tooltip, quote=True)
+        overlay_html = html_mod.escape(caption or comment)
 
         photos_json_list.append({
             "src":      rel_src,
@@ -504,7 +544,7 @@ def build_html(items: list[tuple[Path, str, str]], title: str, output_path: Path
         thumb_parts.append(
             THUMB_TEMPLATE.format(
                 idx=idx,
-                rel_src=html_mod.escape(rel_src, quote=True),
+                thumb_src=html_mod.escape(thumb_rel, quote=True),
                 tooltip_attr=tooltip_attr,
                 overlay_html=overlay_html,
             )
@@ -521,6 +561,7 @@ def build_html(items: list[tuple[Path, str, str]], title: str, output_path: Path
         plural=plural,
         thumbnails=thumbnails_html,
         photos_json=photos_json,
+        thumb_max_px=THUMB_MAX_PX,
     )
 
     output_path.write_text(html_out, encoding="utf-8")
@@ -528,7 +569,8 @@ def build_html(items: list[tuple[Path, str, str]], title: str, output_path: Path
     print(f"  ✓ HTML saved → {output_path}  ({size_kb:.1f} KB)")
     if output_path.parent.resolve() != items[0][0].parent.resolve():
         print("  ⚠  WARNING: HTML is in a different folder from the images.")
-        print("     Relative URLs will break. Use --output-dir equal to the image folder.")
+        print("     Relative URLs (for both full-size images and thumbs/) will break.")
+        print("     Use --output-dir equal to the image folder.")
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -636,7 +678,7 @@ def main():
     )
     parser.add_argument(
         "image_folder", nargs="?", default=".",
-        help="Folder containing .jpg/.jpeg files (default: current directory)",
+        help="Folder containing .jpg/.jpeg/.png files (default: current directory)",
     )
     parser.add_argument(
         "--output-dir", default=None,
@@ -660,7 +702,7 @@ def main():
 
     items = collect_images(image_folder, exiftool_bin)
     if not items:
-        sys.exit(f"No .jpg/.jpeg files found in '{image_folder}'.")
+        sys.exit(f"No .jpg/.jpeg/.png files found in '{image_folder}'.")
 
     print(f"\nFound {len(items)} image(s) in: {image_folder}")
     for p, cap, com in items:
