@@ -277,7 +277,7 @@ HTML_TEMPLATE = """\
     padding: 1.5rem 0.5rem 0.4rem;
     opacity: 0;
     transition: opacity 0.25s;
-    white-space: nowrap;
+    white-space: pre;
     overflow: hidden;
     text-overflow: ellipsis;
   }}
@@ -322,6 +322,7 @@ HTML_TEMPLATE = """\
     font-style: normal;
     font-family: Georgia, serif;
     letter-spacing: 0.02em;
+    white-space: pre;
   }}
   #lb-caption {{
     margin-top: 0.4rem;
@@ -331,6 +332,7 @@ HTML_TEMPLATE = """\
     max-width: 80vw;
     line-height: 1.5;
     font-style: italic;
+    white-space:pre;
   }}
   #lb-counter {{
     margin-top: 0.5rem;
